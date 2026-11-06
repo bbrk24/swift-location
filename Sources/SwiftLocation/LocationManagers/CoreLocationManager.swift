@@ -1,42 +1,88 @@
 #if canImport(CoreLocation)
 import CoreLocation
+import Synchronization
 
-final class CoreLocationManager: NSObject {
+final class CoreLocationManager: NSObject, @unchecked Sendable {
     private let clManager: CLLocationManager
-    private var permissionContinuation: CheckedContinuation<Void, Never>?
-    private var locationContinuation: CheckedContinuation<CLLocation, Error>?
+    private let permissionContinuation: Mutex<CheckedContinuation<Void, Never>?>
+    private let locationContinuation: Mutex<Either<
+        CheckedContinuation<CLLocation, Error>,
+        AsyncStream<Result<Location, LocationError>>.Continuation
+    >?>
 
     override init() {
         clManager = CLLocationManager()
-        permissionContinuation = nil
-        locationContinuation = nil
+        permissionContinuation = Mutex(nil)
+        locationContinuation = Mutex(nil)
         super.init()
         clManager.delegate = self
     }
 }
 
+extension Location {
+    public init(clLocation: CLLocation) {
+        self.init(
+            latitude: Float(clLocation.coordinate.latitude),
+            longitude: Float(clLocation.coordinate.longitude),
+            horizontalAccuracy: Float(clLocation.horizontalAccuracy),
+            timestamp: clLocation.timestamp,
+            altitude: clLocation.verticalAccuracy <= 0.0 ? nil : Float(clLocation.altitude),
+            altitudeAccuracy: clLocation.verticalAccuracy <= 0.0 ? nil : Float(clLocation.verticalAccuracy),
+            heading: clLocation.course < 0.0 ? nil : Float(clLocation.course),
+            headingAccuracy: clLocation.courseAccuracy < 0.0 ? nil : Float(clLocation.courseAccuracy),
+            speed: clLocation.speed < 0.0 ? nil : Float(clLocation.speed),
+            speedAccuracy: clLocation.speedAccuracy < 0.0 ? nil : Float(clLocation.speedAccuracy)
+        )
+    }
+}
+
 extension CoreLocationManager: CLLocationManagerDelegate {
     func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
-        permissionContinuation?.resume()
-        permissionContinuation = nil
+        permissionContinuation.withLock {
+            $0?.resume()
+            $0 = nil
+        }
     }
-    
+
     func locationManager(_ manager: CLLocationManager, didFailWithError error: any Error) {
-        locationContinuation?.resume(throwing: error)
-        locationContinuation = nil
+        locationContinuation.withLock {
+            switch $0 {
+            case .left(let continuation):
+                continuation.resume(throwing: error)
+            case .right(let continuation):
+                if let clError = error as? CLError {
+                    continuation.yield(.failure(CoreLocationManager.toLocationError(clError)))
+                } else {
+                    continuation.yield(.failure(.other(String(describing: error))))
+                }
+                continuation.finish()
+            case nil:
+                break
+            }
+            $0 = nil
+        }
     }
-    
+
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
-        if let location = locations.last {
-            locationContinuation?.resume(returning: location)
-            locationContinuation = nil
+        locationContinuation.withLock {
+            switch $0 {
+            case .left(let continuation):
+                if let location = locations.last {
+                    continuation.resume(returning: location)
+                    $0 = nil
+                }
+            case .right(let continuation):
+                for location in locations {
+                    continuation.yield(.success(.init(clLocation: location)))
+                }
+            case nil:
+                break
+            }
         }
     }
 }
 
 extension CoreLocationManager: LocationManager {
-    typealias LocationSequence = AsyncThrowingStream<Location, LocationError>
-    
     var isLocationAvailable: Bool { CLLocationManager.locationServicesEnabled() }
     
     func hasPermission(_ permissions: LocationPermissions) -> LocationPermissionStatus {
@@ -82,21 +128,27 @@ extension CoreLocationManager: LocationManager {
             return .denied
         }
     }
-    
+
+    @MainActor
     func requestPermission(_ permissions: LocationPermissions) async -> LocationPermissions {
         // If the request*Authorization method being called doesn't or can't result in the
         // permission changing, the delegate method is never called, so the continuation would hang.
-        if clManager.authorizationStatus == .notDetermined {
+        #if os(macOS)
+        let canPermissionChange = clManager.authorizationStatus == .notDetermined
+        #else
+        let canPermissionChange = clManager.authorizationStatus == .notDetermined
+            || (permissions.contains(.background) && clManager.authorizationStatus == .authorizedWhenInUse)
+        #endif
+        if canPermissionChange {
             await withCheckedContinuation { continuation in
-                // Only assert instead of precondition because the CheckedContinuation itself will
-                // blow up if this fails. The assert here just provides a better message.
-                assert(
-                    permissionContinuation == nil,
-                    "\(#function) called re-entrantly"
-                )
+                permissionContinuation.withLock {
+                    // Only assert instead of precondition because the CheckedContinuation itself will
+                    // blow up if this fails. The assert here just provides a better message.
+                    assert($0 == nil, "\(#function) called re-entrantly")
 
-                permissionContinuation = continuation
-                
+                    $0 = continuation
+                }
+
                 if permissions.contains(.background) {
                     clManager.requestAlwaysAuthorization()
                 } else {
@@ -145,34 +197,31 @@ extension CoreLocationManager: LocationManager {
     
     func getLocation(accuracy: LocationAccuracy) async throws(LocationError) -> Location {
         do {
-            let clLocation = try await withTaskCancellationHandler {
-                if locationContinuation != nil {
-                    throw LocationError.requestInFlight
-                }
+            try Task.checkCancellation()
 
+            let clLocation = try await withTaskCancellationHandler {
                 return try await withCheckedThrowingContinuation { continuation in
-                    locationContinuation = continuation
-                    clManager.desiredAccuracy = accuracy.appleValue.rawValue
-                    clManager.requestLocation()
+                    locationContinuation.withLock {
+                        if $0 == nil {
+                            $0 = .left(continuation)
+                            clManager.desiredAccuracy = accuracy.appleValue.rawValue
+                            clManager.distanceFilter = kCLDistanceFilterNone
+                            clManager.requestLocation()
+                        } else {
+                            continuation.resume(throwing: LocationError.requestInFlight)
+                        }
+                    }
                 }
             } onCancel: {
-                // TODO: This can't access locationContinuation because of sendability constraints,
-                // and it can't throw the CancellationError directly either. Figure out what to do
-                // here.
+                locationContinuation.withLock {
+                    if case .left(let continuation) = $0 {
+                        continuation.resume(throwing: CancellationError())
+                        $0 = nil
+                    }
+                }
             }
 
-            return Location(
-                latitude: Float(clLocation.coordinate.latitude),
-                longitude: Float(clLocation.coordinate.longitude),
-                horizontalAccuracy: Float(clLocation.horizontalAccuracy),
-                timestamp: clLocation.timestamp,
-                altitude: clLocation.verticalAccuracy <= 0.0 ? nil : Float(clLocation.altitude),
-                altitudeAccuracy: clLocation.verticalAccuracy <= 0.0 ? nil : Float(clLocation.verticalAccuracy),
-                heading: clLocation.course < 0.0 ? nil : Float(clLocation.course),
-                headingAccuracy: clLocation.courseAccuracy < 0.0 ? nil : Float(clLocation.courseAccuracy),
-                speed: clLocation.speed < 0.0 ? nil : Float(clLocation.speed),
-                speedAccuracy: clLocation.speedAccuracy < 0.0 ? nil : Float(clLocation.speedAccuracy)
-            )
+            return Location(clLocation: clLocation)
         } catch let error as LocationError {
             throw error
         } catch let error as CLError {
@@ -185,12 +234,43 @@ extension CoreLocationManager: LocationManager {
         }
     }
     
+    typealias LocationSequence = TypedThrowsAsyncWrapper<
+        AsyncStream<Result<Location, LocationError>>,
+        Location,
+        LocationError
+    >
+    
     func observeLocation(
         accuracy: LocationAccuracy,
         minMovement: Float,
         minPeriod: Float
     ) -> LocationSequence {
-        fatalError("TODO")
+        let stream = locationContinuation.withLock {
+            var stream: AsyncStream<Result<Location, LocationError>>
+            if $0 != nil {
+                stream = AsyncStream { .failure(.requestInFlight) }
+            } else {
+                clManager.desiredAccuracy = accuracy.appleValue.rawValue
+                clManager.distanceFilter = Double(minMovement)
+                
+                var continuation: AsyncStream<Result<Location, LocationError>>.Continuation
+                (stream, continuation) = AsyncStream.makeStream(bufferingPolicy: .unbounded)
+                $0 = .right(continuation)
+            }
+            
+            return stream
+        }
+
+        return TypedThrowsAsyncWrapper(wrapping: stream) { [self] in
+            clManager.stopUpdatingLocation()
+            locationContinuation.withLock {
+                if case .right(let continuation) = $0 {
+                    continuation.yield(.failure(.cancelled(CancellationError())))
+                    continuation.finish()
+                    $0 = nil
+                }
+            }
+        }
     }
 }
 #endif

@@ -1,4 +1,8 @@
-public protocol LocationManager {
+/// The main class for getting locations and checking permissions.
+///
+/// A location manager does not necessarily support requesting the location from multiple tasks at
+/// once. If such a manager is called re-entrantly, it will throw ``LocationError/requestInFlight``.
+public protocol LocationManager: Sendable {
     /// Whether the device currently has access to location features.
     var isLocationAvailable: Bool { get }
     
@@ -14,7 +18,7 @@ public protocol LocationManager {
     /// Get the current location to within the specified accuracy.
     func getLocation(accuracy: LocationAccuracy) async throws(LocationError) -> Location
 
-    associatedtype LocationSequence: AsyncSequence & Sendable
+    associatedtype LocationSequence: AsyncSequence
     where LocationSequence.Element == Location, LocationSequence.Failure == LocationError
 
     /// Start listening for changes to the location.

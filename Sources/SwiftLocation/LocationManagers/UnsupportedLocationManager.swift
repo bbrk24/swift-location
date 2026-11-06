@@ -1,4 +1,4 @@
-struct UnsupportedLocationManager: LocationManager, Sendable {
+struct UnsupportedLocationManager: LocationManager {
     typealias LocationSequence = AlwaysThrowingAsyncSequence<Location, LocationError>
 
     var isLocationAvailable: Bool { false }
