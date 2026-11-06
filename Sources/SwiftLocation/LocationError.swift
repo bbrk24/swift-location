@@ -4,6 +4,9 @@ public enum LocationError: Error, CustomDebugStringConvertible {
     /// The location fix took too long and the request timed out.
     case timeout
     /// Location services are not currently available.
+    ///
+    /// This could be a transient condition such as a network error, or that the device does not
+    /// have location services.
     case locationUnavailable
     /// The requested accuracy could not be satisfied.
     case inaccurate

@@ -40,6 +40,10 @@ extension CoreLocationManager: LocationManager {
     var isLocationAvailable: Bool { CLLocationManager.locationServicesEnabled() }
     
     func hasPermission(_ permissions: LocationPermissions) -> LocationPermissionStatus {
+        if permissions == [] {
+            return .granted
+        }
+
         switch clManager.authorizationStatus {
         case .notDetermined:
             return .notPrompted
@@ -50,7 +54,9 @@ extension CoreLocationManager: LocationManager {
             }
 
             if clManager.accuracyAuthorization == .reducedAccuracy {
-                if permissions.contains(.coarse) {
+                if permissions == .coarse {
+                    return .granted
+                } else if permissions.contains(.coarse) {
                     return .partiallyGranted
                 } else {
                     return .denied
