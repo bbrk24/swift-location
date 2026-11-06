@@ -88,7 +88,14 @@ extension CoreLocationManager: LocationManager {
         // permission changing, the delegate method is never called, so the continuation would hang.
         if clManager.authorizationStatus == .notDetermined {
             await withCheckedContinuation { continuation in
-                self.permissionContinuation = continuation
+                // Only assert instead of precondition because the CheckedContinuation itself will
+                // blow up if this fails. The assert here just provides a better message.
+                assert(
+                    permissionContinuation == nil,
+                    "\(#function) called re-entrantly"
+                )
+
+                permissionContinuation = continuation
                 
                 if permissions.contains(.background) {
                     clManager.requestAlwaysAuthorization()
@@ -139,7 +146,11 @@ extension CoreLocationManager: LocationManager {
     func getLocation(accuracy: LocationAccuracy) async throws(LocationError) -> Location {
         do {
             let clLocation = try await withTaskCancellationHandler {
-                try await withCheckedThrowingContinuation { continuation in
+                if locationContinuation != nil {
+                    throw LocationError.requestInFlight
+                }
+
+                return try await withCheckedThrowingContinuation { continuation in
                     locationContinuation = continuation
                     clManager.desiredAccuracy = accuracy.appleValue.rawValue
                     clManager.requestLocation()
@@ -162,8 +173,10 @@ extension CoreLocationManager: LocationManager {
                 speed: clLocation.speed < 0.0 ? nil : Float(clLocation.speed),
                 speedAccuracy: clLocation.speedAccuracy < 0.0 ? nil : Float(clLocation.speedAccuracy)
             )
-        } catch let clError as CLError {
-            throw CoreLocationManager.toLocationError(clError)
+        } catch let error as LocationError {
+            throw error
+        } catch let error as CLError {
+            throw CoreLocationManager.toLocationError(error)
         } catch let error as CancellationError {
             clManager.stopUpdatingLocation()
             throw .cancelled(error)
@@ -176,7 +189,7 @@ extension CoreLocationManager: LocationManager {
         accuracy: LocationAccuracy,
         minMovement: Float,
         minPeriod: Float
-    ) async -> LocationSequence {
+    ) -> LocationSequence {
         fatalError("TODO")
     }
 }

@@ -1,4 +1,4 @@
-struct UnsupportedLocationManager: LocationManager {
+struct UnsupportedLocationManager: LocationManager, Sendable {
     typealias LocationSequence = AlwaysThrowingAsyncSequence<Location, LocationError>
 
     var isLocationAvailable: Bool { false }
@@ -19,7 +19,7 @@ struct UnsupportedLocationManager: LocationManager {
         accuracy: LocationAccuracy,
         minMovement: Float,
         minPeriod: Float
-    ) async -> AlwaysThrowingAsyncSequence<Location, LocationError> {
+    ) -> AlwaysThrowingAsyncSequence<Location, LocationError> {
         return AlwaysThrowingAsyncSequence {
             do {
                 try Task.checkCancellation()

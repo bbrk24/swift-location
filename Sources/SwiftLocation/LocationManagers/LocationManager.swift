@@ -13,10 +13,10 @@ public protocol LocationManager {
     
     /// Get the current location to within the specified accuracy.
     func getLocation(accuracy: LocationAccuracy) async throws(LocationError) -> Location
-    
-    associatedtype LocationSequence: AsyncSequence
+
+    associatedtype LocationSequence: AsyncSequence & Sendable
     where LocationSequence.Element == Location, LocationSequence.Failure == LocationError
-    
+
     /// Start listening for changes to the location.
     /// - Parameters:
     ///   - accuracy: How accurate each location needs to be
@@ -26,7 +26,7 @@ public protocol LocationManager {
         accuracy: LocationAccuracy,
         minMovement: Float,
         minPeriod: Float
-    ) async -> LocationSequence
+    ) -> LocationSequence
 }
 
 extension LocationManager {

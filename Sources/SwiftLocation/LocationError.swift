@@ -10,6 +10,9 @@ public enum LocationError: Error, CustomDebugStringConvertible {
     case locationUnavailable
     /// The requested accuracy could not be satisfied.
     case inaccurate
+    /// Another location request is in-flight, and the location manager does not support concurrent
+    /// location requests.
+    case requestInFlight
     /// The containing task was cancelled.
     case cancelled(CancellationError)
     /// An unexpected error occurred.
@@ -25,6 +28,8 @@ public enum LocationError: Error, CustomDebugStringConvertible {
             "Location services are currently unavailable."
         case .inaccurate:
             "The specified accuracy could not be satisfied."
+        case .requestInFlight:
+            "Another location request is in-flight."
         case .cancelled(_):
             "The task was cancelled."
         case .other(let message):
