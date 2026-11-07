@@ -256,6 +256,8 @@ extension CoreLocationManager: LocationManager {
                 var continuation: AsyncStream<Result<Location, LocationError>>.Continuation
                 (stream, continuation) = AsyncStream.makeStream(bufferingPolicy: .unbounded)
                 $0 = .right(continuation)
+                
+                clManager.startUpdatingLocation()
             }
             
             return stream
